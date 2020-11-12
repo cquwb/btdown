@@ -68,10 +68,7 @@ func NewDownloadManager(t *torrent.Torrent, path string) (*DownloadManager, erro
 		}
 	}
 
-	total := t.Length / t.PieceLength
-	if t.Length%t.PieceLength != 0 {
-		total++
-	}
+	total := len(t.PiecesHash)
 	if bencodeM.Total != total {
 		bencodeM.Total = total
 	}

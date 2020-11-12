@@ -19,6 +19,7 @@ type Peer struct {
 type PeerDownload struct {
 	beginTime  int64
 	index      int    //piece index
+	size       int    //piece size
 	backlog    int    //已经开始的请求个数
 	requested  int    //已经开始请求的数据大小
 	downloaded int    //已经下载的数据大小

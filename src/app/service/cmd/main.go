@@ -48,10 +48,7 @@ func main() {
 	fmt.Printf("get info %+v \n", info)
 	newInfo := torrent.ChangeBencodeToTrack(info)
 	fmt.Printf("get newInfo %+v \n", newInfo)
-	pieceCount := newTorr.Length / newTorr.PieceLength
-	if newTorr.Length%newTorr.PieceLength != 0 {
-		pieceCount++
-	}
+	pieceCount := len(newTorr.PiecesHash)
 
 	//添加控制信息
 	downloadManager, err := download.NewDownloadManager(newTorr, *gDst)
@@ -77,24 +74,27 @@ func main() {
 	for _, v := range finishedIndex {
 		finishedIndexMap[v] = true
 	}
+	totalLen := int64(0)
 	for i := 0; i < pieceCount; i++ {
+		size := newTorr.GetSize(i)
 		if _, exist := finishedIndexMap[i]; !exist {
-			gWorkQueue <- &client.Work{i}
+			gWorkQueue <- &client.Work{i, size}
+		} else {
+			totalLen += int64(size)
 		}
 	}
 
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, os.Interrupt)
 
-	totalLen := 0
 	//receiveData := make([]byte, newTorr.Length)
 	for {
 		select {
 		case piecePayload := <-gPieceChan:
 			l4g.Debug("main receive data %d", piecePayload.Index)
-			totalLen += len(piecePayload.Block)
+			totalLen += int64(len(piecePayload.Block))
 			finished := downloadManager.SetFinished(piecePayload.Index, piecePayload.Block)
-			l4g.Info("download data :%d now:%d total:%d", int(float64(totalLen)/float64(newTorr.Length)*10000.0), totalLen, newTorr.Length)
+			l4g.Info("download data :(%0.2f%%) now:%d total:%d", float64(totalLen)/float64(newTorr.Length)*100, totalLen, newTorr.Length)
 			if finished {
 				//newTorr.Save(receiveData, *gDst)
 				l4g.Debug("main receive total data %d", totalLen)

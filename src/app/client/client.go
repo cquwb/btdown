@@ -2,7 +2,9 @@ package client
 
 import (
 	"app/torrent"
+	"bytes"
 	"context"
+	"crypto/sha1"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -116,7 +118,7 @@ func (p *PeerClient) Run(ctx context.Context, wg *sync.WaitGroup, workQueue chan
 					break
 					//continue
 				}
-				if !p.BeginDownload(index) {
+				if !p.BeginDownload(index, work.Size) {
 					l4g.Info("peer %s, get work but begin download error %d", p.Identify(), index)
 					p.workQueue <- work
 					break
@@ -287,7 +289,7 @@ func (p *PeerClient) ReadMsgLoop() {
 
 func (p *PeerClient) Stop() {
 	if p.download != nil {
-		p.workQueue <- &Work{p.download.index}
+		p.workQueue <- &Work{p.download.index, p.download.size}
 	}
 	close(p.Close)
 }
@@ -336,7 +338,7 @@ func (p *PeerClient) Identify() string {
 	return p.peer.Addr()
 }
 
-func (p *PeerClient) BeginDownload(index int) bool {
+func (p *PeerClient) BeginDownload(index int, size int) bool {
 	if p.download != nil {
 		l4g.Error("peer:%s begin download index:%d but in download:%d", p.Identify(), index, p.download.index)
 		return false //已经开始下载了
@@ -344,13 +346,14 @@ func (p *PeerClient) BeginDownload(index int) bool {
 	l4g.Debug("peer:%s begin download new index:%d", p.Identify(), index)
 	d := &PeerDownload{
 		index:     index,
-		data:      make([]byte, p.t.PieceLength),
+		data:      make([]byte, size),
+		size:      size,
 		beginTime: time.Now().Unix(),
 	}
-	for d.backlog < MaxBackLog && d.requested < p.t.PieceLength {
+	for d.backlog < MaxBackLog && d.requested < size {
 		need := BlockSize
-		if p.t.PieceLength-d.requested < BlockSize {
-			need = p.t.PieceLength - d.requested
+		if size-d.requested < BlockSize {
+			need = size - d.requested
 		}
 		if !p.SendRequestMsg(index, d.requested, need) {
 			l4g.Error("peer:%s begin download index:%d send request msg error", p.Identify(), index)
@@ -378,20 +381,26 @@ func (p *PeerClient) NewDownload(payload *PiecePayload) {
 	d.downloaded += downloaded
 	copy(d.data[start:end], payload.Block)
 	//d.data = append(d.data, data...)
-	if d.downloaded >= p.t.PieceLength {
-		l4g.Debug("peer:%s new download has finish, index:%d requested:%d, piece_length:%d", p.Identify(), p.download.index, p.download.requested, p.t.PieceLength)
+	if d.downloaded >= d.size {
+		l4g.Debug("peer:%s new download has finish, index:%d requested:%d, piece_length:%d", p.Identify(), p.download.index, p.download.requested, d.size)
 		totalPiecePayload := &TotalPiecePayload{
 			Index: p.download.index,
 			Block: p.download.data,
+		}
+		if !p.CheckSum(totalPiecePayload) {
+			l4g.Error("peer:%s download check sum:%d error", p.download.index)
+			p.workQueue <- &Work{p.download.index, p.download.size} //任务放回去
+			p.download = nil
+			return
 		}
 		p.pieceChan <- totalPiecePayload
 		p.download = nil
 		return
 	}
-	for d.backlog < MaxBackLog && d.requested < p.t.PieceLength {
+	for d.backlog < MaxBackLog && d.requested < d.size {
 		need := BlockSize
-		if p.t.PieceLength-d.requested < BlockSize {
-			need = p.t.PieceLength - d.requested
+		if d.size-d.requested < BlockSize {
+			need = d.size - d.requested
 		}
 		if !p.SendRequestMsg(d.index, d.requested, need) {
 			l4g.Error("peer:%d new download send request error", p.Identify())
@@ -405,10 +414,15 @@ func (p *PeerClient) NewDownload(payload *PiecePayload) {
 func (p *PeerClient) CheckDownload() {
 	if p.download != nil {
 		now := time.Now().Unix()
-		if now-p.download.beginTime >= 2*60 {
+		if now-p.download.beginTime >= 5*60 {
 			l4g.Error("peer:%s download index:%d use too much time,begin_time:%d， now:%d downloaded:%d", p.Identify(), p.download.index, p.download.beginTime, now, p.download.downloaded)
-			p.workQueue <- &Work{p.download.index} //任务放回去
+			p.workQueue <- &Work{p.download.index, p.download.size} //任务放回去
 			p.download = nil
 		}
 	}
+}
+
+func (p *PeerClient) CheckSum(payload *TotalPiecePayload) bool {
+	hash := sha1.Sum(payload.Block)
+	return bytes.Equal(p.t.PiecesHash[payload.Index][:], hash[:])
 }

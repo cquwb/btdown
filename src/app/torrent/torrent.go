@@ -35,14 +35,14 @@ type BencodeTorrent struct {
 type BencodeInfo struct {
 	Pieces      string `bencode:"pieces"`       //这里是所有碎片的一个sha-1信息拼接成的一个字符串。
 	PieceLength int    `bencode:"piece length"` //每个piece的长度
-	Length      int    `bencode:"length"`       //整个文件的长度
+	Length      int64  `bencode:"length"`       //整个文件的长度
 	Name        string `bencode:"name"`         //文件名称
 }
 
 //对TorrentFile的清洗。
 type Torrent struct {
 	Announce    string
-	Length      int
+	Length      int64
 	PieceLength int
 	Name        string
 	PiecesHash  [][20]byte //每个piece的sha1.Sum()
@@ -146,7 +146,7 @@ func (t *Torrent) buildTrackerURL(port uint16) (string, error) {
 		"port":       []string{strconv.Itoa(int(port))},
 		"downloaded": []string{"0"},
 		"uploaded":   []string{"0"},
-		"left":       []string{strconv.Itoa(t.Length)},
+		"left":       []string{strconv.FormatInt(t.Length, 10)},
 		"compact":    []string{"1"},
 	}
 	base.RawQuery = params.Encode()
@@ -158,6 +158,15 @@ func (t *Torrent) Save(data []byte, path string) {
 	if err := ioutil.WriteFile(newPath, data, 0644); err != nil {
 		l4g.Error("torrent save error:%s", err)
 	}
+}
+
+func (t *Torrent) GetSize(index int) int {
+	start := int64(index) * int64(t.PieceLength)
+	end := start + int64(t.PieceLength)
+	if end > t.Length {
+		end = t.Length
+	}
+	return int(end - start)
 }
 
 type BencodeTrackerInfo struct {
