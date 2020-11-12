@@ -55,6 +55,7 @@ func (p *PeerClient) Run(ctx context.Context, wg *sync.WaitGroup, workQueue chan
 	p.ctx = ctx
 	p.workQueue = workQueue
 	p.timer = time.NewTicker(100 * time.Millisecond)
+	defer p.timer.Stop()
 	timeTotal := 0
 	//不设置超时，等了2分钟左右
 	conn, err := net.DialTimeout("tcp", p.peer.Addr(), 15*time.Second)
@@ -62,6 +63,7 @@ func (p *PeerClient) Run(ctx context.Context, wg *sync.WaitGroup, workQueue chan
 		l4g.Error("peer connect error %s", err)
 		goto OUT
 	}
+	defer conn.Close()
 	p.conn = conn
 	p.SendHandShakeMsg()
 	p.conn.SetReadDeadline(time.Now().Add(1 * time.Second))
