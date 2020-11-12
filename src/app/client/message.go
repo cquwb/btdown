@@ -69,3 +69,8 @@ func UnSerializePiecePayload(data []byte) *PiecePayload {
 	payload.Block = data[8:]
 	return payload
 }
+
+type TotalPiecePayload struct {
+	Index int
+	Block []byte
+}

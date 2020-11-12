@@ -28,11 +28,11 @@ type PeerClient struct {
 	ctx       context.Context
 	Close     chan struct{}
 	t         *torrent.Torrent
-	pieceChan chan *PiecePayload
+	pieceChan chan *TotalPiecePayload
 	workQueue chan *Work
 }
 
-func NewPeerClient(id int, peer *torrent.Peer, t *torrent.Torrent, pieceChan chan *PiecePayload) *PeerClient {
+func NewPeerClient(id int, peer *torrent.Peer, t *torrent.Torrent, pieceChan chan *TotalPiecePayload) *PeerClient {
 	//num := len(t.PiecesHash)
 	//bitfield := make([]byte, (num/8 + 1))
 	//初始化
@@ -64,10 +64,12 @@ func (p *PeerClient) Run(ctx context.Context, wg *sync.WaitGroup, workQueue chan
 	}
 	p.conn = conn
 	p.SendHandShakeMsg()
+	p.conn.SetReadDeadline(time.Now().Add(1 * time.Second))
 	if err := p.ReceiveHandShakeMsg(); err != nil {
 		l4g.Error("peer:%s receive handshake msg error %s", p.Identify(), err)
 		goto OUT
 	}
+	p.conn.SetReadDeadline(time.Time{})
 	l4g.Info("peer:%s handshake success", p.Identify())
 	p.SendUnchoke()
 	p.SendInterested()
@@ -89,6 +91,9 @@ func (p *PeerClient) Run(ctx context.Context, wg *sync.WaitGroup, workQueue chan
 			timeTotal++
 			if timeTotal%600 == 0 {
 				p.SendKeepAlive()
+			}
+			if timeTotal%10 == 0 {
+				p.CheckDownload()
 			}
 			if p.choke || p.download != nil {
 				break
@@ -320,8 +325,8 @@ func (p *PeerClient) DealMessage(msg *PeerMessage) {
 			l4g.Error("peer:%s get piece ereror, index wrong:download index:%d, receive index:%d", p.Identify(), p.download.index, payload.Index)
 			return
 		}
-		p.NewDownload(len(payload.Block))
-		p.pieceChan <- payload
+		p.NewDownload(payload)
+		//p.pieceChan <- payload
 	}
 }
 
@@ -336,7 +341,9 @@ func (p *PeerClient) BeginDownload(index int) bool {
 	}
 	l4g.Debug("peer:%s begin download new index:%d", p.Identify(), index)
 	d := &PeerDownload{
-		index: index,
+		index:     index,
+		data:      make([]byte, p.t.PieceLength),
+		beginTime: time.Now().Unix(),
 	}
 	for d.backlog < MaxBackLog && d.requested < p.t.PieceLength {
 		need := BlockSize
@@ -354,7 +361,8 @@ func (p *PeerClient) BeginDownload(index int) bool {
 	return true
 }
 
-func (p *PeerClient) NewDownload(downloaded int) {
+func (p *PeerClient) NewDownload(payload *PiecePayload) {
+	downloaded := len(payload.Block)
 	l4g.Debug("peer:%s download:%d new download", p.Identify(), downloaded)
 	if p.download == nil {
 		l4g.Debug("peer:%s new download has no download info", p.Identify())
@@ -363,9 +371,18 @@ func (p *PeerClient) NewDownload(downloaded int) {
 
 	d := p.download
 	d.backlog-- //队列要减少1
+	start := payload.Begin
+	end := start + downloaded
 	d.downloaded += downloaded
+	copy(d.data[start:end], payload.Block)
+	//d.data = append(d.data, data...)
 	if d.downloaded >= p.t.PieceLength {
 		l4g.Debug("peer:%s new download has finish, index:%d requested:%d, piece_length:%d", p.Identify(), p.download.index, p.download.requested, p.t.PieceLength)
+		totalPiecePayload := &TotalPiecePayload{
+			Index: p.download.index,
+			Block: p.download.data,
+		}
+		p.pieceChan <- totalPiecePayload
 		p.download = nil
 		return
 	}
@@ -380,5 +397,16 @@ func (p *PeerClient) NewDownload(downloaded int) {
 		}
 		d.requested += need
 		d.backlog++
+	}
+}
+
+func (p *PeerClient) CheckDownload() {
+	if p.download != nil {
+		now := time.Now().Unix()
+		if now-p.download.beginTime >= 2*60 {
+			l4g.Error("peer:%s download index:%d use too much time,begin_time:%d， now:%d downloaded:%d", p.Identify(), p.download.index, p.download.beginTime, now, p.download.downloaded)
+			p.workQueue <- &Work{p.download.index} //任务放回去
+			p.download = nil
+		}
 	}
 }
